@@ -47,10 +47,19 @@ otp_length = 6
 otp_expiry = 3600
 
 [functions.chat]
-# Gateway-level JWT verification on top of the checks the function performs
-# itself. The function still calls auth.getUser() and runs every query through
-# a user-scoped client, so RLS remains the real boundary.
-verify_jwt = true
+# Off deliberately, matching Supabase's own recommendation for functions that
+# carry their own auth logic.
+#
+# The gateway check ("Verify JWT with legacy secret") only accepts tokens
+# signed by the legacy HS256 secret. A project using asymmetric JWT signing
+# keys issues ES256 user tokens, which that check rejects outright with
+# UNAUTHORIZED_ASYMMETRIC_JWT before the function ever runs.
+#
+# Authentication is not weakened: the function rejects any request whose
+# Authorization header does not resolve to a user via auth.getUser(), and it
+# runs every statement through a client built from that same header, so RLS
+# still decides what the caller can touch.
+verify_jwt = false
 
 [analytics]
 enabled = false

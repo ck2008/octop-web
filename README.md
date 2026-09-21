@@ -177,6 +177,21 @@ version.
 
 ---
 
+### JWT verification setting
+
+In **Edge Functions → chat → Settings**, leave **Verify JWT with legacy secret**
+switched **off**.
+
+That gateway check only accepts tokens signed by the legacy HS256 secret. A
+project using asymmetric JWT signing keys issues ES256 user tokens, which the
+check rejects with `UNAUTHORIZED_ASYMMETRIC_JWT` before the function runs at
+all. Supabase's own guidance is to turn it off when the function does its own
+auth, which this one does: it rejects any request whose `Authorization` header
+does not resolve to a user, and every statement runs under that user's
+authorization context with RLS applied.
+
+---
+
 ## 8. Supabase secrets
 
 ```bash
@@ -288,6 +303,14 @@ If you would rather not confirm email addresses while testing, turn off
 - A project has an owner and no other members.
 - `ALLOWED_ORIGINS` should be set explicitly in production; the built-in
   fallback only covers localhost.
+- If the Supabase project is shared with another application, note that both
+  share one `auth.users` table: anyone who registers here also becomes an
+  authenticated user of that other app. Likewise, two apps served from the same
+  origin (for example two paths under `<user>.github.io`) share browser
+  storage, so each one's Supabase session sits alongside the other's. The SDK
+  keys its session by project ref and picks the right one, but any hand-written
+  code that reads `localStorage` directly must match on the full
+  `sb-<project-ref>-auth-token` key rather than the first one it finds.
 
 ---
 

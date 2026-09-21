@@ -94,6 +94,61 @@ interface ChatRequestBody {
   message?: unknown
 }
 
+/**
+ * Finds the project's publishable key across the names the platform has used.
+ *
+ * Older projects expose `SUPABASE_ANON_KEY`; newer ones expose
+ * `SUPABASE_PUBLISHABLE_KEYS`, a JSON value whose exact shape has varied
+ * (a bare string, an array, or an object keyed by name), so every plausible
+ * shape is unwrapped rather than assuming one.
+ */
+function resolvePublishableKey(): { key: string; source: string } | undefined {
+  const singular = Deno.env.get('SUPABASE_PUBLISHABLE_KEY')?.trim()
+  if (singular) return { key: singular, source: 'SUPABASE_PUBLISHABLE_KEY' }
+
+  const unwrap = (value: unknown): string | undefined => {
+    if (typeof value === 'string') {
+      return value.startsWith('sb_publishable_') || value.startsWith('ey')
+        ? value
+        : undefined
+    }
+    if (Array.isArray(value)) {
+      for (const entry of value) {
+        const found = unwrap(entry)
+        if (found) return found
+      }
+      return undefined
+    }
+    if (value && typeof value === 'object') {
+      for (const entry of Object.values(value)) {
+        const found = unwrap(entry)
+        if (found) return found
+      }
+    }
+    return undefined
+  }
+
+  // Preferred on projects that have moved to asymmetric JWT signing keys. The
+  // legacy anon key below can be disabled on those projects, so it is only a
+  // last resort.
+  const bundle = Deno.env.get('SUPABASE_PUBLISHABLE_KEYS')?.trim()
+  if (bundle) {
+    let found: string | undefined
+    try {
+      found = unwrap(JSON.parse(bundle))
+    } catch {
+      // Not JSON - treat the value as the key itself.
+      found = unwrap(bundle)
+    }
+    if (found) return { key: found, source: 'SUPABASE_PUBLISHABLE_KEYS' }
+  }
+
+  const legacy = Deno.env.get('SUPABASE_ANON_KEY')?.trim()
+  if (legacy) return { key: legacy, source: 'SUPABASE_ANON_KEY' }
+
+  return undefined
+}
+
 /** First 40 characters of the opening message, single-lined. No model call. */
 function deriveTitle(message: string): string | null {
   const flattened = message.replace(/\s+/g, ' ').trim()
@@ -166,10 +221,9 @@ Deno.serve(async (request: Request): Promise<Response> => {
   }
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL')
-  const anonKey =
-    Deno.env.get('SUPABASE_PUBLISHABLE_KEY') ?? Deno.env.get('SUPABASE_ANON_KEY')
+  const resolved = resolvePublishableKey()
 
-  if (!supabaseUrl || !anonKey) {
+  if (!supabaseUrl || !resolved) {
     console.error(
       JSON.stringify({ requestId, error: 'config', detail: 'missing_supabase_env' }),
     )
@@ -178,13 +232,23 @@ Deno.serve(async (request: Request): Promise<Response> => {
 
   // Built from the publishable key plus the caller's header: this client is the
   // user, so RLS applies to every statement below.
-  const supabase = createClient(supabaseUrl, anonKey, {
+  const supabase = createClient(supabaseUrl, resolved.key, {
     global: { headers: { Authorization: authHeader } },
     auth: { persistSession: false, autoRefreshToken: false },
   })
 
   const { data: authData, error: authError } = await supabase.auth.getUser()
   if (authError || !authData.user) {
+    // The variable NAME is logged, never the key, so a misconfigured project
+    // can be diagnosed without exposing anything.
+    console.error(
+      JSON.stringify({
+        requestId,
+        error: 'auth',
+        keySource: resolved.source,
+        detail: authError?.message ?? 'no_user',
+      }),
+    )
     return errorResponse('Not authenticated.', 401, origin)
   }
   const userId = authData.user.id
